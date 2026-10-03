@@ -1,0 +1,59 @@
+# IoT-WLAN Authentication Protocol — 3-Container Docker Setup
+#
+# Architecture:
+#   IoT <--iot_net--> AP <--as_net--> AS
+#
+# IoT and AS CANNOT communicate directly (separate Docker networks).
+# AP bridges both networks as a transparent TCP relay.
+#
+# Pre-Registration:
+#   PKS (server public key) is pre-provisioned via a shared Docker volume,
+#   simulating offline manufacturing/provisioning (not sent over the network).
+#   PSW (password) is generated locally on the IoT device (AS never sees it).
+
+volumes:
+  shared_keys:                                                        # Simulates offline key provisioning (manufacturing)
+
+services:
+  as_server:
+    build: ./as_server
+    container_name: auth_server
+    networks:
+      - as_net
+    volumes:
+      - shared_keys:/shared                                           # AS writes PKS here at startup
+    environment:
+      - AS_PORT=55556
+
+  ap:
+    build: ./ap
+    container_name: access_point
+    depends_on:
+      - as_server
+    networks:
+      - iot_net
+      - as_net
+    environment:
+      - AS_HOST=as_server
+      - AS_PORT=55556
+
+  iot:
+    build: ./iot
+    container_name: iot_device
+    depends_on:
+      - ap
+    networks:
+      - iot_net
+    volumes:
+      - shared_keys:/shared                                           # IoT reads PKS from here (pre-provisioned)
+    environment:
+      - AP_HOST=ap
+      - AP_PORT=55555
+
+networks:
+  iot_net:
+    driver: bridge
+    name: iot_network
+  as_net:
+    driver: bridge
+    name: as_network
