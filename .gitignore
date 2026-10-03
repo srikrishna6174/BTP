@@ -13,6 +13,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+work_text.txt
+work.pdf
 
 # Large binary (optional — remove this line if you want the PDF in the repo)
 # work.pdf

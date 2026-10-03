@@ -1,0 +1,167 @@
+// ==============================================================================
+// Scyther Model for WLANIoTAuth Protocol
+// ------------------------------------------------------------------------------
+// This file formally models the Authentication Phase (Algorithms 4, 5, 6) 
+// of the protocol using the Scyther verification tool.
+// 
+// Mapping to the Paper:
+// - D (Device)  : Represents the IoT Device.
+// - S (Server)  : Represents the Authentication Server.
+// - k(D,S)      : Abstractly represents the long-term symmetric key 'Kreg' 
+//                 shared between the Device and Server after Registration.
+// - hash(...)   : Represents the secure one-way hash function h().
+// ==============================================================================
+
+
+hashfunction hash;
+
+protocol WLANIoTAuth(D, S) {
+    role D {
+        // 'fresh' variables are generated securely and randomly by this role.
+        fresh Nc, R1;
+        
+        // 'var' variables are received from the network and bound during execution.
+        var Nd, r2; 
+        
+        // ----------------------------------------------------------------------
+        // State Initialization (From Registration Phase)
+        // ----------------------------------------------------------------------
+        // Paper: Ii (pseudo-identity) is securely stored in device.
+        // We model Ii as a hash of the shared key and D to ensure uniqueness.
+
+        macro Ii = hash(k(D,S), D);
+        
+
+
+        // Paper: OTj is an unused One-Time nonce from the OTlist.
+        // Modeled abstractly as bound to the shared key and S.
+
+        macro OTj = hash(k(D,S), S);
+        
+
+
+        
+        // Algorithm 4: Device Authentication Request
+        // Step 15: Iu = h(Ii XOR R1) -> Modeled as hash(Ii, R1)
+
+        macro Iu = hash(Ii, R1);
+        
+
+
+        // Step 16: M1 = ENC_Kreg(Iu || MSIdi || Nc || T1 || R1 || LIAi || OTindex)
+        // Note: MSIdi is abstracted as S, T1/LIAi/OTindex are operational 
+        //       and omitted for the core cryptographic proof.
+
+        macro M1 = {Iu, S, Nc, R1}k(D,S); 
+        
+        // Step 17: HA1 = h(Iu || MSIdi || Nc || T1 || R1 || LIAi || OTindex)
+
+        macro HA1 = hash(Iu, S, Nc, R1);
+        
+
+
+        // Step 18: Send <Midi, M1, HA1, T1> to Server.
+        // D is sent in plaintext abstracting the masked identity Midi.
+
+        send_1(D, S, D, M1, HA1); 
+        
+
+
+        // Algorithm 6: Server Authentication by Device
+        // Recompute the parameters the Server is expected to use
+        // Step 6: Knew = h(Kreg || OTj || Nc || R1)
+
+        macro Knew = hash(k(D,S), OTj, Nc, R1);
+        
+
+
+        // Expected updated identity mask: IuN = h(Ii XOR R1 XOR r2)
+
+        macro IuN = hash(Ii, R1, r2);
+        
+
+
+        // Expected M2 and HA2 structure based on Knew and IuN
+        // D and S abstractly represent Midi_new and MSIdi_new
+
+        macro M2 = {IuN, D, S, Nd, r2}Knew; 
+        macro HA2 = hash(IuN, D, S, Nd, r2);
+        
+
+
+        // Step 1: Receive <M2, HA2, T2> from Server.
+        // Scyther automatically performs the structural equivalence check here.
+        // If the adversary tampered with the message, this receive fails.
+
+        recv_2(S, D, M2, HA2);
+        
+
+
+        // Step 9: Session Key Derivation: SK = h(Knew || Nd || IuN)
+
+        macro SK = hash(Knew, Nd, IuN);
+        
+
+
+        // ----------------------------------------------------------------------
+        // Security Claims (Propositions 1, 2, 5, 6 from the Paper)
+        // ----------------------------------------------------------------------
+
+        claim(D, Secret, SK);      // SK is never leaked
+        claim(D, Alive);           // Server is alive
+        claim(D, Weakagree);       // Server agrees to talk to D
+        claim(D, Niagree);         // Non-injective agreement on all variables
+        claim(D, Nisynch);         // Synchronization (no replay attacks)
+    }
+    
+
+
+    role S {
+        // Server generates Nd and r2 freshly
+        fresh Nd, r2;
+        
+        // Server receives Nc and R1 from the Device
+        var Nc, R1;
+        
+        // Retrieve state based on abstract shared key
+        macro Ii = hash(k(D,S), D);
+        macro OTj = hash(k(D,S), S);
+        
+
+        // Algorithm 5: Server Authenticates Device
+
+        macro Iu = hash(Ii, R1);
+        macro M1 = {Iu, S, Nc, R1}k(D,S);
+        macro HA1 = hash(Iu, S, Nc, R1);
+        
+        // Step 2 & 3: Receive and decrypt M1, verify HA1.
+        recv_1(D, S, D, M1, HA1);
+        
+        // Step 7: Knew = h(Kreg || OTj || Nc || R1)
+        macro Knew = hash(k(D,S), OTj, Nc, R1);
+        
+        // Step 9: IuN = h(Ii XOR R1 XOR r2)
+        macro IuN = hash(Ii, R1, r2);
+        
+        // Step 10: M2 = ENC_Knew(IuN || Midi_new || MSIdi_new || Nd || r2)
+        macro M2 = {IuN, D, S, Nd, r2}Knew;
+        
+        // Step 11: HA2 = h(IuN || Midi_new || MSIdi_new || Nd || r2)
+        macro HA2 = hash(IuN, D, S, Nd, r2);
+        
+        // Step 12: Send <M2, HA2, T2> to Device.
+        send_2(S, D, M2, HA2);
+        
+        // Step 14: Session Key Derivation: SK = h(Knew || Nd || IuN)
+        macro SK = hash(Knew, Nd, IuN);
+        
+        // ----------------------------------------------------------------------
+        // Security Claims for Server
+        // ----------------------------------------------------------------------
+        claim(S, Secret, SK);
+        claim(S, Alive);
+        claim(S, Weakagree);
+        claim(S, Niagree);
+        claim(S, Nisynch);
+    }
+}

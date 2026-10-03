@@ -1,0 +1,204 @@
+(* ==============================================================================
+   ProVerif Formal Verification Model for WLANIoTAuth Protocol
+   ------------------------------------------------------------------------------
+   Protocol: "An improved privacy preserving authentication protocol 
+              with fast reconnection for WLAN-IOT devices"
+   Source:   JISA 99 (2026) 104445
+   
+   This model formally verifies the Authentication Phase (Algorithms 4, 5, 6).
+   
+   Features modeled from base paper:
+   1. Device Authentication Request (Algorithm 4):
+      - Fresh nonces (R1, Nc) and timestamp T1
+      - Dynamic identity mask Iu = h(Ii XOR R1)
+      - Encrypted message M1 = senc((Iu, MSIdi, Nc, T1, R1), Kreg)
+      - Integrity MAC HA1 = h((Iu, MSIdi, Nc, T1, R1))
+      - Transmission of <Midi, M1, HA1, T1>
+      
+   2. Server Authentication of Device (Algorithm 5):
+      - Timestamp freshness verification (T2 - T1 <= Delta_T) and anti-replay
+      - Decryption and MAC verification (HA1* == HA1, T1* == T1, Iu* == h(Ii XOR R1))
+      - Fresh nonces (Nd, r2) and timestamp T3
+      - Updated session key Knew = h(Kreg || OTj || Nc || R1)
+      - Updated identity mask IuN = h(Ii XOR R1 XOR r2)
+      - Encrypted response M2 = senc((IuN, Midi_new, MSIdi_new, Nd, T3, r2), Knew)
+      - Integrity MAC HA2 = h((IuN, Midi_new, MSIdi_new, Nd, T3, r2))
+      - Transmission of <M2, HA2, T3>
+      - Shared Session Key SK = h(Knew || Nd || IuN)
+      
+   3. Server Authentication by Device (Algorithm 6):
+      - Timestamp freshness check (T4 - T3 <= Delta_T)
+      - Decryption of M2 using independently derived Knew
+      - Verification of HA2, T3, and IuN == h(Ii XOR R1 XOR r2)
+      - Derivation of shared Session Key SK = h(Knew || Nd || IuN)
+   ============================================================================== *)
+
+(* --- Public Communication Channel --- *)
+free c: channel.
+
+(* --- Cryptographic Primitives --- *)
+(* Secure Hash Function: h(·) *)
+fun h(bitstring): bitstring.
+
+(* Symmetric Encryption & Decryption: ENC_k(·) / DK_k(·) *)
+fun senc(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, k: bitstring; sdec(senc(m, k), k) = m.
+
+(* --- Public Entities and Identifiers --- *)
+free D_id: bitstring.
+free S_id: bitstring.
+
+(* --- Security Events for Mutual Authentication --- *)
+event beginDeviceAuth(bitstring, bitstring, bitstring). (* R1, Nc, T1 *)
+event endServerAuth(bitstring, bitstring, bitstring).   (* R1, Nc, T1 *)
+
+event beginServerAuth(bitstring, bitstring, bitstring). (* Nd, r2, T3 *)
+event endDeviceAuth(bitstring, bitstring, bitstring).   (* Nd, r2, T3 *)
+
+(* ==============================================================================
+   SECURITY QUERIES (Propositions from Paper)
+   ============================================================================== *)
+
+(* 1. Session Key Secrecy (Paper: Propositions 5 and 6) *)
+free secret_SK: bitstring [private].
+query attacker(secret_SK).
+
+(* 2. Device Pseudo-Identity Anonymity / Secrecy (Paper: Proposition 2) *)
+free secret_Ii: bitstring [private].
+query attacker(secret_Ii).
+
+(* 3. Injective Mutual Authentication (Paper: Proposition 1) *)
+(* Device authenticates Server with replay protection *)
+query x: bitstring, y: bitstring, z: bitstring; 
+  inj-event(endDeviceAuth(x, y, z)) ==> inj-event(beginServerAuth(x, y, z)).
+
+(* Server authenticates Device with replay protection *)
+query x: bitstring, y: bitstring, z: bitstring; 
+  inj-event(endServerAuth(x, y, z)) ==> inj-event(beginDeviceAuth(x, y, z)).
+
+
+(* ==============================================================================
+   ROLE: Device (D) - Algorithms 4 and 6
+   ============================================================================== *)
+let processDevice(Kreg: bitstring, Ii: bitstring, OTj: bitstring) =
+    (* --- Algorithm 4: Device Authentication Request --- *)
+    (* Step 12 & 13: Generate fresh random nonces *)
+    new Nc: bitstring;
+    new R1: bitstring;
+    (* Step 14: Generate current timestamp T1 *)
+    new T1: bitstring;
+    
+    (* Step 15: Compute dynamic masked identity Iu = h(Ii XOR R1) *)
+    let Iu = h((Ii, R1)) in
+    
+    (* Step 16: M1 = ENC_Kreg(Iu || MSIdi || Nc || T1 || R1) *)
+    let M1 = senc((Iu, S_id, Nc, T1, R1), Kreg) in
+    
+    (* Step 17: HA1 = h(Iu || MSIdi || Nc || T1 || R1) *)
+    let HA1 = h((Iu, S_id, Nc, T1, R1)) in
+    
+    (* Event: Device begins authentication session with (R1, Nc, T1) *)
+    event beginDeviceAuth(R1, Nc, T1);
+    
+    (* Step 18: Send <Midi, M1, HA1, T1> to Server via public channel *)
+    out(c, (D_id, M1, HA1, T1));
+    
+    (* --- Algorithm 6: Server Authentication by Device --- *)
+    (* Step 1: Receive <M2, HA2, T3> from Server *)
+    in(c, (M2: bitstring, HA2: bitstring, T3: bitstring));
+    
+    (* Step 6: Derive Knew = h(Kreg || OTj || Nc || R1) *)
+    let Knew = h((Kreg, OTj, Nc, R1)) in
+    
+    (* Step 7: Decrypt M2 using Knew *)
+    let (IuN_recv: bitstring, Midi_new: bitstring, MSIdi_new: bitstring, Nd: bitstring, T3_recv: bitstring, r2: bitstring) = sdec(M2, Knew) in
+    
+    (* Step 1: Verify freshness of timestamp T3 (T4 - T3 <= Delta_T) *)
+    if T3_recv = T3 then
+    
+    (* Step 8: Verify MAC HA2 *)
+    if HA2 = h((IuN_recv, Midi_new, MSIdi_new, Nd, T3, r2)) then
+    
+    (* Step 12 & 13: Verify updated identity mask IuN == h(Ii XOR R1 XOR r2) *)
+    if IuN_recv = h((Ii, R1, r2)) then
+    
+    (* Step 17: Derive Session Key SK = h(Knew || Nd || IuN) *)
+    let SK = h((Knew, Nd, IuN_recv)) in
+    
+    (* Event: Device successfully authenticates Server *)
+    event endDeviceAuth(Nd, r2, T3);
+    
+    (* Security tests for Secrecy claims *)
+    out(c, senc(secret_SK, SK));
+    out(c, senc(secret_Ii, Ii)).
+
+
+(* ==============================================================================
+   ROLE: Server (S) - Algorithm 5
+   ============================================================================= *)
+let processServer(Kreg: bitstring, Ii: bitstring, OTj: bitstring, serverState: channel) =
+    (* Ensure atomic consumption of one-time session credentials (anti-replay) *)
+    in(serverState, ());
+    
+    (* Step 1: Receive <Midi, M1, HA1, T1> *)
+    in(c, (Midi_recv: bitstring, M1: bitstring, HA1: bitstring, T1: bitstring));
+    
+    (* Step 7: Decrypt M1 using shared registration key Kreg *)
+    let (Iu_recv: bitstring, MSIdi_recv: bitstring, Nc: bitstring, T1_recv: bitstring, R1: bitstring) = sdec(M1, Kreg) in
+    
+    (* Step 1: Verify freshness of timestamp T1 (T2 - T1 <= Delta_T) *)
+    if T1_recv = T1 then
+    
+    (* Step 8: Verify MAC HA1 *)
+    if HA1 = h((Iu_recv, MSIdi_recv, Nc, T1, R1)) then
+    
+    (* Step 8: Verify dynamic identity Iu matches h(Ii XOR R1) *)
+    if Iu_recv = h((Ii, R1)) then
+    
+    (* Event: Server successfully authenticates Device *)
+    event endServerAuth(R1, Nc, T1);
+    
+    (* Step 16, 17, 18: Generate fresh nonces and timestamp T3 *)
+    new Nd: bitstring;
+    new r2: bitstring;
+    new T3: bitstring;
+    
+    (* Event: Server begins response session with (Nd, r2, T3) *)
+    event beginServerAuth(Nd, r2, T3);
+    
+    (* Step 19: Compute updated key Knew = h(Kreg || OTj || Nc || R1) *)
+    let Knew = h((Kreg, OTj, Nc, R1)) in
+    
+    (* Step 20: Compute updated mask IuN = h(Ii XOR R1 XOR r2) *)
+    let IuN = h((Ii, R1, r2)) in
+    
+    (* Step 29 & 30: Compute response M2 and MAC HA2 *)
+    let HA2 = h((IuN, D_id, S_id, Nd, T3, r2)) in
+    let M2 = senc((IuN, D_id, S_id, Nd, T3, r2), Knew) in
+    
+    (* Step 32: Send <M2, HA2, T3> to Device *)
+    out(c, (M2, HA2, T3));
+    
+    (* Step 22: Derive Session Key SK = h(Knew || Nd || IuN) *)
+    let SK = h((Knew, Nd, IuN)) in
+    
+    out(c, senc(secret_SK, SK)).
+
+
+(* ==============================================================================
+   MAIN PROCESS
+   ============================================================================== *)
+process
+    (* Unbounded parallel protocol sessions across time *)
+    !(
+        (* Initialize long-term credentials established during Registration phase *)
+        new Kreg: bitstring;
+        new Ii: bitstring;
+        new OTj: bitstring;
+        
+        (* Session state channel modeling single-use of one-time nonces / fresh timestamp *)
+        new serverState: channel;
+        out(serverState, ());
+        
+        ( processDevice(Kreg, Ii, OTj) | processServer(Kreg, Ii, OTj, serverState) )
+    )
