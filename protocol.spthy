@@ -97,7 +97,6 @@ functions: pk/1
 
 
 /* ============ RESTRICTIONS ============ */
-
 /* Equality restriction:
  * Enables the Eq(x, y) action fact used throughout the protocol
  * to model equality checks (hash verification, ciphertext matching).
@@ -105,6 +104,7 @@ functions: pk/1
 
 restriction Equality:
   "All x y #i. Eq(x, y) @i ==> x = y"
+
 
 /* Singleton server restriction:
  * Ensures exactly one server instance exists, preventing Tamarin
@@ -293,8 +293,7 @@ rule Device_Storage_Alg3:
 
 
 
-/* ============ ALGORITHM 4: Device Auth Request ============ */
- * ------------------------------------------------------------------
+/* ============ ALGORITHM 4: Device Auth Request ============ 
  * Paper: Algorithm 4 — Device Authentication Request
  *   Input:  Authentication request by device
  *   Output: <Midi, M1, HA1, T1>  (sent to server via AP)
