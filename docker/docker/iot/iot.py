@@ -210,7 +210,7 @@ class IoTProtocol:                                                  # Client-sid
         eph_sks = ec.generate_private_key(ec.SECP256R1())           # Generate EPHEMERAL ECDH private key (one-time use)
         eph_pks = eph_sks.public_key()                              # Derive ephemeral public key from private key
         eph_shared = eph_sks.exchange(ec.ECDH(), pks)               # ECDH key exchange: IoT_ephemeral_private × AS_public
-        aes_key_e1 = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'handshake').derive(eph_shared)  # Derive 32-byte AES key from ECDH shared secret via HKDF
+        aes_key_e1 = HKDF(algorithm=hashes.SHA256(), length=32, salt=None,    info=b'handshake').derive(eph_shared)  # Derive 32-byte AES key from ECDH shared secret via HKDF
 
         e1_payload = i_i + n_a + t_1 + et + lia_i + tid_i + w + p_list_mock  # E1 plaintext: all registration data concatenated
         e1 = aes_encrypt(aes_key_e1, e1_payload)                    # Encrypt E1 payload with HKDF-derived AES key
