@@ -13,6 +13,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+*.png
 work_text.txt
 work.pdf
 
