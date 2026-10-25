@@ -1,0 +1,156 @@
+================================================================================
+  BTP HARDWARE EXPERIMENT PROCEDURE GUIDE
+  EAP-IMP Protocol: Laptop (Auth Server) <--> Raspberry Pi 3B+ (IoT Device)
+================================================================================
+
+This document contains complete, step-by-step instructions to run the hardware
+experiment between your Laptop and the Raspberry Pi anytime in the future.
+
+
+================================================================================
+1. PHYSICAL HARDWARE SETUP
+================================================================================
+IMPORTANT SAFETY RULE: Never insert or remove the Micro SD card while the
+Raspberry Pi is powered on!
+
+1. Ensure the Raspberry Pi is UNPLUGGED from power.
+2. Insert the Micro SD card firmly into the slot under the Raspberry Pi 
+   (metal pins facing towards the circuit board).
+3. Connect one end of the RJ-45 LAN (Ethernet) cable to your Laptop.
+4. Connect the other end of the LAN cable to the Raspberry Pi Ethernet port.
+5. Plug the micro-USB power cable from the power bank into the Raspberry Pi.
+6. The solid RED power LED will turn on, and the GREEN activity LED will start
+   blinking as the OS boots up. Wait 45-60 seconds for boot-up to complete.
+
+
+================================================================================
+2. WINDOWS NETWORK SETUP (INTERNET CONNECTION SHARING / ICS)
+================================================================================
+This configuration allows your laptop to act as the gateway/DHCP server for the
+Pi, gives the Pi internet access via your Wi-Fi, and sets the expected IPs:
+  - Laptop IP (AS)   : 192.168.137.1
+  - Raspberry Pi (IoT): 192.168.137.204
+
+Procedure to enable (if not already enabled):
+1. Press [Win + R] on your laptop keyboard, type: ncpa.cpl and hit Enter.
+2. Right-click on your active "Wi-Fi" adapter -> click "Properties".
+3. Click the "Sharing" tab at the top.
+4. Check the box:
+   "Allow other network users to connect through this computer's Internet connection"
+5. In the "Home networking connection" dropdown, select "Ethernet".
+6. Click "OK".
+7. (Optional/Refresh) Unplug the LAN cable from your laptop for 3 seconds,
+   then plug it back in.
+
+Verification:
+Open PowerShell on your laptop and run:
+  ping -n 2 192.168.137.204
+You should see 0% loss with ~1ms response time.
+
+
+================================================================================
+3. CONNECTING TO THE RASPBERRY PI VIA SSH
+================================================================================
+Open a PowerShell window (Terminal 1) on your laptop:
+
+  ssh pi@192.168.137.204
+
+- If asked "Are you sure you want to continue connecting (yes/no)?", type: yes
+- Password: raspberry
+  (Note: Linux does not show characters while typing passwords)
+- You will see the prompt: pi@raspberrypi:~ $
+
+
+================================================================================
+4. COPYING / SYNCING PROJECT FILES TO THE PI
+================================================================================
+Whenever you make updates to the python scripts on your laptop, copy the latest
+files to the Pi using SCP.
+
+Open a SECOND PowerShell window (Terminal 2) on your laptop and run:
+
+  scp C:\Users\Srikrishna\Desktop\BTP\Implementation\hardware_experiment\benchmark_table4.py C:\Users\Srikrishna\Desktop\BTP\Implementation\hardware_experiment\pks.pem C:\Users\Srikrishna\Desktop\BTP\Implementation\hardware_experiment\iot.py pi@192.168.137.204:~
+
+Password: raspberry
+You should see 100% transfer for all three files.
+
+
+================================================================================
+5. RUNNING THE EXPERIMENTS
+================================================================================
+
+--- TEST A: Cryptographic Micro-Benchmark (Table 4 Replication) ---
+Run this directly inside your Raspberry Pi terminal (Terminal 1):
+
+  python3 benchmark_table4.py
+
+This measures 1,000 iterations of SHA-256, HMAC-SHA-256, AES-CBC-256 (Enc/Dec),
+and ECC Point Multiplication on the Pi ARM hardware, and compares against Table 4.
+
+
+--- TEST B: Live Mutual Authentication Protocol Handshake ---
+Follow this exact order:
+
+Step 1: Start the Authentication Server on your Laptop
+In Laptop PowerShell (Terminal 2):
+  cd C:\Users\Srikrishna\Desktop\BTP\Implementation\hardware_experiment
+  python as_server.py
+
+You will see:
+  [AS] Listening on 0.0.0.0:55556
+  [AS] Waiting for Raspberry Pi 3B+ on port 55556...
+
+Step 2: Start the IoT Client on the Raspberry Pi
+In Raspberry Pi Terminal (Terminal 1):
+  python3 iot.py
+
+Both devices will execute the 6-algorithm authentication handshake, verify
+each other, establish the exact same 256-bit Session Key, exchange an
+authenticated encrypted message, and display full performance metrics:
+  - Wall-clock time (ms)
+  - CPU process time (ms)
+  - Energy consumption (mJ)
+  - Communication overhead (Bytes sent / received)
+
+--- Fast Re-Run (Running Multiple Trials) ---
+To run the authentication test again:
+1. On Laptop:  python as_server.py
+2. On Pi:      python3 iot.py
+
+
+================================================================================
+6. SAFE POWER-OFF PROCEDURE
+================================================================================
+CRITICAL: Never pull the power cable out without cleanly shutting down the OS,
+or the SD card may get corrupted!
+
+1. In the Raspberry Pi terminal (Terminal 1), run:
+     sudo poweroff
+2. Wait ~10 seconds.
+3. Look at the Raspberry Pi board:
+   - The GREEN activity LED will stop flashing and turn off completely.
+   - Only the solid RED power LED will stay lit.
+4. Once the green blinking has completely stopped, unplug the power cable
+   from the power bank.
+5. Disconnect the LAN cable.
+
+
+================================================================================
+7. COMMON TROUBLESHOOTING
+================================================================================
+Issue: "Connection timed out" when SSHing into Pi.
+Fix  : Ensure you use `ssh pi@192.168.137.204` instead of `raspberrypi.local`
+       to force IPv4 connection. Check if pinging 192.168.137.204 works.
+
+Issue: Ping to 192.168.137.204 fails.
+Fix  : Open `ncpa.cpl`, disable and re-enable Internet Connection Sharing on
+       your Wi-Fi adapter. Unplug and replug the LAN cable on your laptop.
+
+Issue: "Connection refused on port 55556".
+Fix  : Make sure `python as_server.py` is actively running on your laptop
+       BEFORE running `python3 iot.py` on the Raspberry Pi.
+
+Issue: Cryptography module not found on Pi.
+Fix  : In Pi terminal, run:
+       sudo apt update && sudo apt install -y python3-cryptography python3-pip
+================================================================================
