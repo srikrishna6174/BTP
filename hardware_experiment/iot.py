@@ -2,9 +2,21 @@
 IoT Device Client — Hardware Deployment
 Full 6-Algorithm EAP-IMP Authentication Protocol with timing, energy, and communication metrics.
 Runs on Raspberry Pi 3B+ (ARM Cortex-A53).
-Directly connects to Laptop AS at 192.168.137.1:55556.
+
+Performs WARMUP + RUNS sequential full handshakes (new connection and new
+registration each run), then prints mean/std statistics and writes CSV files.
+Start the AS with the same --runs/--warmup values.
+
+  python3 iot.py                                   # 3 warm-up + 50 measured runs
+  python3 iot.py --runs 1 --warmup 0 --verbose     # single detailed run
+
+Target (env):  AS_HOST (default 192.168.137.1)   AS_PORT (default 55556)
+  Ethernet (direct to AS):  python3 iot.py
+  Wireless (via AP relay):  AS_PORT=55555 python3 iot.py
+Needs expstats.py in the same folder.
 """
 
+import argparse
 import socket
 import json
 import base64
@@ -12,102 +24,27 @@ import hashlib
 import os
 import sys
 import time
-try:
-    import resource
-except ImportError:
-    resource = None
+
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+import expstats
+
 AS_HOST = os.environ.get('AS_HOST', '192.168.137.1')
 AS_PORT = int(os.environ.get('AS_PORT', '55556'))
 IOT_POWER_WATTS = float(os.environ.get('IOT_POWER_WATTS', '1.2'))  # RPi 3B+ active ~1.2W
 
-class Metrics:
-    def __init__(self):
-        self.phases = []
-        self.total_bytes_sent = 0
-        self.total_bytes_recv = 0
-        self._phase_start_wall = None
-        self._phase_start_cpu = None
-        self._phase_bytes_sent = 0
-        self._phase_bytes_recv = 0
-        self._total_start_wall = None
-        self._total_start_cpu = None
+VERBOSE = False
 
-    def start_total(self):
-        self._total_start_wall = time.perf_counter()
-        self._total_start_cpu = time.process_time()
+metrics = expstats.Metrics(IOT_POWER_WATTS)
 
-    def start_phase(self, name):
-        self._phase_start_wall = time.perf_counter()
-        self._phase_start_cpu = time.process_time()
-        self._phase_bytes_sent = 0
-        self._phase_bytes_recv = 0
-        self._current_phase = name
 
-    def record_send(self, nbytes):
-        self._phase_bytes_sent += nbytes
-        self.total_bytes_sent += nbytes
+def log(*args):
+    if VERBOSE:
+        print(*args)
 
-    def record_recv(self, nbytes):
-        self._phase_bytes_recv += nbytes
-        self.total_bytes_recv += nbytes
-
-    def end_phase(self):
-        wall = time.perf_counter() - self._phase_start_wall
-        cpu = time.process_time() - self._phase_start_cpu
-        energy = cpu * IOT_POWER_WATTS
-        self.phases.append({
-            'name': self._current_phase,
-            'wall_time_ms': wall * 1000,
-            'cpu_time_ms': cpu * 1000,
-            'energy_mJ': energy * 1000,
-            'bytes_sent': self._phase_bytes_sent,
-            'bytes_recv': self._phase_bytes_recv,
-        })
-
-    def print_summary(self):
-        total_wall = time.perf_counter() - self._total_start_wall
-        total_cpu = time.process_time() - self._total_start_cpu
-        total_energy = total_cpu * IOT_POWER_WATTS
-
-        print("\n" + "=" * 70)
-        print("   IoT DEVICE (Raspberry Pi 3B+) — PERFORMANCE METRICS")
-        print("=" * 70)
-        print(f"  Power Model: {IOT_POWER_WATTS} W (set IOT_POWER_WATTS to change)")
-        print("-" * 70)
-        print(f"  {'Phase':<30} {'Wall(ms)':>10} {'CPU(ms)':>10} "
-              f"{'Energy(mJ)':>12} {'Sent(B)':>9} {'Recv(B)':>9}")
-        print("-" * 70)
-
-        for p in self.phases:
-            print(f"  {p['name']:<30} {p['wall_time_ms']:>10.3f} "
-                  f"{p['cpu_time_ms']:>10.3f} {p['energy_mJ']:>12.4f} "
-                  f"{p['bytes_sent']:>9d} {p['bytes_recv']:>9d}")
-
-        print("-" * 70)
-        print(f"  {'TOTAL':<30} {total_wall*1000:>10.3f} "
-              f"{total_cpu*1000:>10.3f} {total_energy*1000:>12.4f} "
-              f"{self.total_bytes_sent:>9d} {self.total_bytes_recv:>9d}")
-        print("=" * 70)
-        print(f"  Total Wall-Clock Time : {total_wall*1000:.3f} ms")
-        print(f"  Total CPU Time        : {total_cpu*1000:.3f} ms")
-        print(f"  Total Energy (est.)   : {total_energy*1000:.4f} mJ ({total_energy*1e6:.2f} µJ)")
-        print(f"  Total Bytes Sent      : {self.total_bytes_sent} bytes")
-        print(f"  Total Bytes Received  : {self.total_bytes_recv} bytes")
-        print(f"  Total Communication   : {self.total_bytes_sent + self.total_bytes_recv} bytes")
-        print("-" * 70)
-        if resource:
-            ru = resource.getrusage(resource.RUSAGE_SELF)
-            print(f"  Max RSS Memory        : {ru.ru_maxrss} KB")
-            print(f"  User CPU Time (OS)    : {ru.ru_utime*1000:.3f} ms")
-            print(f"  System CPU Time (OS)  : {ru.ru_stime*1000:.3f} ms")
-        print("=" * 70)
-
-metrics = Metrics()
 
 def sha256(*args):
     h = hashlib.sha256()
@@ -151,13 +88,16 @@ def recv_msg(sock):
     if not raw: return None
     msglen = int.from_bytes(raw, 'big')
     data = recvall(sock, msglen)
+    if data is None: return None
     metrics.record_recv(4 + msglen)
     return json.loads(data.decode('utf-8'))
 
 def recvall(sock, n):
     data = bytearray()
     while len(data) < n:
+        t = time.perf_counter()
         pkt = sock.recv(n - len(data))
+        metrics.add_wait(time.perf_counter() - t)
         if not pkt: return None
         data.extend(pkt)
     return data
@@ -166,25 +106,16 @@ class IoTProtocol:
     def __init__(self):
         self.uidd = os.urandom(16)
 
-    def execute_handshake(self, sock):
-        metrics.start_total()
-
+    def execute_handshake(self, sock, pks):
         # === PRE-REGISTRATION ===
-        print("\n[IoT] --- PRE-REGISTRATION (Offline) ---")
+        log("\n[IoT] --- PRE-REGISTRATION (Offline) ---")
         psw = os.urandom(16)
-        print("[IoT] PSW: generated locally on device (AS never receives it).")
-
-        pks_path = 'pks.pem'
-        while not os.path.exists(pks_path):
-            print(f"[IoT] Waiting for PKS at {pks_path}...")
-            time.sleep(1)
-        with open(pks_path, 'rb') as f:
-            pks = serialization.load_pem_public_key(f.read())
-        print(f"[IoT] PKS: loaded from {pks_path} (pre-provisioned).")
+        log("[IoT] PSW: generated locally on device (AS never receives it).")
+        log("[IoT] PKS: pre-provisioned (loaded from pks.pem).")
 
         # === ALGORITHM 1 — Registration Initialization ===
         metrics.start_phase("Algo 1 — Reg Init")
-        print("\n[IoT] --- REGISTRATION PHASE (Algorithm 1) ---")
+        log("\n[IoT] --- REGISTRATION PHASE (Algorithm 1) ---")
         challenge = sha256(self.uidd, b"PUF CHALLENGE")
         r = simulate_puf(challenge)
         puf_secret = sha256(r, self.uidd)
@@ -218,13 +149,16 @@ class IoTProtocol:
             'H1': base64.b64encode(h1).decode('utf-8'),
             'eph_pub': base64.b64encode(eph_pks_pem).decode('utf-8')
         })
-        print("[IoT] Sent E1, H1 to AS.")
+        log("[IoT] Sent E1, H1 to AS.")
         metrics.end_phase()
 
         # === ALGORITHM 3 — Device Storage Setup ===
         metrics.start_phase("Algo 3 — Storage Setup")
-        print("\n[IoT] --- ALGORITHM 3 — Device Storage Setup ---")
+        log("\n[IoT] --- ALGORITHM 3 — Device Storage Setup ---")
         reg_resp = recv_msg(sock)
+        if not reg_resp:
+            print("[IoT] ERROR: Connection closed during registration.")
+            return None
         e2 = base64.b64decode(reg_resp['E2'])
         h2 = base64.b64decode(reg_resp['H2'])
 
@@ -248,12 +182,12 @@ class IoTProtocol:
         ot_list = [ot_list_bytes[i:i+16] for i in range(0, len(ot_list_bytes), 16)]
         msk = aes_decrypt(k_reg, msk_enc)
 
-        print("[IoT] Registration successful. Credentials decrypted.")
+        log("[IoT] Registration successful. Credentials decrypted.")
         metrics.end_phase()
 
         # === ALGORITHM 4 — Authentication Request ===
         metrics.start_phase("Algo 4 — Auth Request")
-        print("\n[IoT] --- AUTHENTICATION PHASE (Algorithm 4) ---")
+        log("\n[IoT] --- AUTHENTICATION PHASE (Algorithm 4) ---")
         ot_index = 0
         ot_j = ot_list[ot_index]
         r_1 = os.urandom(16)
@@ -270,12 +204,12 @@ class IoTProtocol:
             'M1': base64.b64encode(m1).decode('utf-8'),
             'HA1': base64.b64encode(ha1).decode('utf-8')
         })
-        print("[IoT] Sent M1, HA1 to AS.")
+        log("[IoT] Sent M1, HA1 to AS.")
         metrics.end_phase()
 
         # === ALGORITHM 6 — Server Authentication by Device ===
         metrics.start_phase("Algo 6 — Server Auth")
-        print("\n[IoT] --- ALGORITHM 6 — Server Auth by Device ---")
+        log("\n[IoT] --- ALGORITHM 6 — Server Auth by Device ---")
         auth_resp = recv_msg(sock)
         if not auth_resp:
             print("[IoT] ERROR: Connection closed during auth.")
@@ -303,47 +237,129 @@ class IoTProtocol:
             return None
 
         sk = sha256(k_new, n_d, i_u_n)
-        print("[IoT] Server authenticated. Handshake COMPLETE!")
-        print(f"[IoT] Session Key: {sk.hex()}")
+        log("[IoT] Server authenticated. Handshake COMPLETE!")
+        log(f"[IoT] Session Key: {sk.hex()}")
         metrics.end_phase()
 
         return sk
 
-def main():
-    print("=" * 65)
-    print("  IoT DEVICE CLIENT (RPi 3B+) — HARDWARE EXPERIMENT")
-    print(f"  Connecting to AS at {AS_HOST}:{AS_PORT}")
-    print("=" * 65)
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+def secure_exchange(s, sk):
+    metrics.start_phase("Secure Message Exchange")
     try:
-        s.connect((AS_HOST, AS_PORT))
-        print(f"[IoT] Connected to AS server successfully!\n")
-    except Exception as e:
-        print(f"[IoT] Connection failed: {e}")
-        return
-
-    proto = IoTProtocol()
-    sk = proto.execute_handshake(s)
-
-    if sk:
-        metrics.start_phase("Secure Message Exchange")
         msg = b"Hello from Raspberry Pi 3B+! Protocol verified on hardware."
         enc_msg = aes_encrypt(sk, msg)
         s.sendall(enc_msg)
         metrics.record_send(len(enc_msg))
 
+        t = time.perf_counter()
         enc_resp = s.recv(4096)
-        if enc_resp:
-            metrics.record_recv(len(enc_resp))
-            resp = aes_decrypt(sk, enc_resp)
-            print(f"[IoT] Server Response: {resp.decode('utf-8')}")
+        metrics.add_wait(time.perf_counter() - t)
+        if not enc_resp:
+            return False
+        metrics.record_recv(len(enc_resp))
+        resp = aes_decrypt(sk, enc_resp)
+        log(f"[IoT] Server Response: {resp.decode('utf-8')}")
+        return True
+    finally:
         metrics.end_phase()
 
-        print("\n[IoT] Protocol execution complete.")
-        metrics.print_summary()
 
-    s.close()
+def load_pks(path='pks.pem'):
+    while not os.path.exists(path):
+        print(f"[IoT] Waiting for PKS at {path}...")
+        time.sleep(1)
+    with open(path, 'rb') as f:
+        return serialization.load_pem_public_key(f.read())
+
+
+def run_once(pks):
+    """One full handshake on a fresh connection. Returns (ok, tcp_connect_ms, error)."""
+    metrics.reset()
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    t = time.perf_counter()
+    try:
+        s.connect((AS_HOST, AS_PORT))
+    except OSError as e:
+        s.close()
+        return False, None, f"connect failed: {e}"
+    connect_ms = (time.perf_counter() - t) * 1000
+
+    ok, err = False, None
+    metrics.start_total()
+    try:
+        sk = IoTProtocol().execute_handshake(s, pks)
+        if sk:
+            ok = secure_exchange(s, sk)
+    except Exception as e:
+        err = repr(e)
+    finally:
+        s.close()
+    metrics.finish()
+    return ok, connect_ms, err
+
+
+def report(rows, out_dir):
+    if not rows:
+        print("[IoT] No runs recorded.")
+        return
+    notes = [f"Power model: {IOT_POWER_WATTS} W x CPU time (set IOT_POWER_WATTS to change)."]
+    expstats.print_summary("IoT DEVICE (Raspberry Pi 3B+) — STATISTICS", rows, notes)
+    runs_path, summary_path = expstats.write_csvs(out_dir, 'iot', rows)
+    print(f"  CSV (per run) : {runs_path}")
+    print(f"  CSV (summary) : {summary_path}")
+
+
+def main():
+    global VERBOSE
+    parser = expstats.add_common_args(argparse.ArgumentParser(description=__doc__.split('\n')[1]))
+    parser.add_argument('--delay', type=float, default=0.2,
+                        help='pause between runs in seconds (default %(default)s)')
+    args = parser.parse_args()
+    total = args.warmup + args.runs
+    VERBOSE = args.verbose or total == 1
+
+    print("=" * 65)
+    print("  IoT DEVICE CLIENT (RPi 3B+) — HARDWARE EXPERIMENT")
+    print(f"  Target AS/AP: {AS_HOST}:{AS_PORT}")
+    print(f"  {args.warmup} warm-up + {args.runs} measured handshakes")
+    print("=" * 65)
+
+    pks = load_pks()
+    rows = []
+    connect_failures = 0
+    try:
+        for idx in range(1, total + 1):
+            warm = idx <= args.warmup
+            ok, connect_ms, err = run_once(pks)
+            if err:
+                print(f"[IoT] Run {idx}: {err}")
+            if connect_ms is None:
+                connect_failures += 1
+                if connect_failures >= 3:
+                    print("[IoT] Cannot connect to the AS/AP (3 failures in a row). "
+                          "Check that it is running and AS_HOST/AS_PORT are correct.")
+                    break
+                time.sleep(1)
+                continue
+            connect_failures = 0
+
+            row = {'run': idx, 'warmup': int(warm), 'ok': int(ok), 'tcp_connect_ms': connect_ms}
+            row.update(metrics.as_row())
+            rows.append(row)
+            t = metrics.total
+            print(f"[IoT] run {idx}/{total} {'warm-up' if warm else 'measured'} "
+                  f"{'ok' if ok else 'FAILED'}  wall={t['wall_ms']:.2f} ms  cpu={t['cpu_ms']:.2f} ms  "
+                  f"connect={connect_ms:.2f} ms")
+            if total == 1:
+                metrics.print_table("IoT DEVICE (Raspberry Pi 3B+) — PERFORMANCE METRICS")
+            if idx < total:
+                time.sleep(args.delay)
+    except KeyboardInterrupt:
+        print("\n[IoT] Interrupted — reporting runs completed so far.")
+
+    report(rows, args.out_dir)
+
 
 if __name__ == '__main__':
     main()
