@@ -2,114 +2,45 @@
 Authentication Server (AS) — Hardware Deployment
 Full 6-Algorithm EAP-IMP Authentication Protocol with timing, energy, and communication metrics.
 Runs on Laptop / Desktop (Intel Core i5 benchmarked in paper).
-Directly communicates with Raspberry Pi 3B+ over Ethernet (192.168.137.1:55556).
+
+Serves WARMUP + RUNS sequential full handshakes (new connection each), then prints
+mean/std statistics and writes CSV files. Start the IoT side with the same
+--runs/--warmup values.
+
+  python as_server.py                  # 3 warm-up + 50 measured runs
+  python as_server.py --runs 1 --warmup 0 --verbose     # single detailed run
 """
 
+import argparse
 import socket
 import json
 import base64
 import hashlib
 import os
-import sys
 import time
-
-try:
-    import resource
-except ImportError:
-    resource = None
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+import expstats
+
 HOST = '0.0.0.0'
 PORT = int(os.environ.get('AS_PORT', '55556'))
 AS_POWER_WATTS = float(os.environ.get('AS_POWER_WATTS', '65.0'))
 
-class Metrics:
-    def __init__(self):
-        self.phases = []
-        self.total_bytes_sent = 0
-        self.total_bytes_recv = 0
-        self._phase_start_wall = None
-        self._phase_start_cpu = None
-        self._phase_bytes_sent = 0
-        self._phase_bytes_recv = 0
-        self._total_start_wall = None
-        self._total_start_cpu = None
+VERBOSE = False
 
-    def start_total(self):
-        self._total_start_wall = time.perf_counter()
-        self._total_start_cpu = time.process_time()
+# On Windows process_time() only advances every ~15.6 ms, so energy is computed from
+# active time (wall minus time blocked in recv) there instead of CPU time.
+metrics = expstats.Metrics(AS_POWER_WATTS, energy_from_active=(os.name == 'nt'))
 
-    def start_phase(self, name):
-        self._phase_start_wall = time.perf_counter()
-        self._phase_start_cpu = time.process_time()
-        self._phase_bytes_sent = 0
-        self._phase_bytes_recv = 0
-        self._current_phase = name
 
-    def record_send(self, nbytes):
-        self._phase_bytes_sent += nbytes
-        self.total_bytes_sent += nbytes
+def log(*args):
+    if VERBOSE:
+        print(*args)
 
-    def record_recv(self, nbytes):
-        self._phase_bytes_recv += nbytes
-        self.total_bytes_recv += nbytes
-
-    def end_phase(self):
-        wall = time.perf_counter() - self._phase_start_wall
-        cpu = time.process_time() - self._phase_start_cpu
-        energy = cpu * AS_POWER_WATTS
-        self.phases.append({
-            'name': self._current_phase,
-            'wall_time_ms': wall * 1000,
-            'cpu_time_ms': cpu * 1000,
-            'energy_mJ': energy * 1000,
-            'bytes_sent': self._phase_bytes_sent,
-            'bytes_recv': self._phase_bytes_recv,
-        })
-
-    def print_summary(self):
-        total_wall = time.perf_counter() - self._total_start_wall
-        total_cpu = time.process_time() - self._total_start_cpu
-        total_energy = total_cpu * AS_POWER_WATTS
-
-        print("\n" + "=" * 70)
-        print("   AUTHENTICATION SERVER (AS) — PERFORMANCE METRICS")
-        print("=" * 70)
-        print(f"  Power Model: {AS_POWER_WATTS} W (set AS_POWER_WATTS to change)")
-        print("-" * 70)
-        print(f"  {'Phase':<30} {'Wall(ms)':>10} {'CPU(ms)':>10} "
-              f"{'Energy(mJ)':>12} {'Sent(B)':>9} {'Recv(B)':>9}")
-        print("-" * 70)
-
-        for p in self.phases:
-            print(f"  {p['name']:<30} {p['wall_time_ms']:>10.3f} "
-                  f"{p['cpu_time_ms']:>10.3f} {p['energy_mJ']:>12.4f} "
-                  f"{p['bytes_sent']:>9d} {p['bytes_recv']:>9d}")
-
-        print("-" * 70)
-        print(f"  {'TOTAL':<30} {total_wall*1000:>10.3f} "
-              f"{total_cpu*1000:>10.3f} {total_energy*1000:>12.4f} "
-              f"{self.total_bytes_sent:>9d} {self.total_bytes_recv:>9d}")
-        print("=" * 70)
-        print(f"  Total Wall-Clock Time : {total_wall*1000:.3f} ms")
-        print(f"  Total CPU Time        : {total_cpu*1000:.3f} ms")
-        print(f"  Total Energy (est.)   : {total_energy*1000:.4f} mJ ({total_energy*1e6:.2f} µJ)")
-        print(f"  Total Bytes Sent      : {self.total_bytes_sent} bytes")
-        print(f"  Total Bytes Received  : {self.total_bytes_recv} bytes")
-        print(f"  Total Communication   : {self.total_bytes_sent + self.total_bytes_recv} bytes")
-        print("-" * 70)
-        if resource:
-            ru = resource.getrusage(resource.RUSAGE_SELF)
-            print(f"  Max RSS Memory        : {ru.ru_maxrss} KB")
-            print(f"  User CPU Time (OS)    : {ru.ru_utime*1000:.3f} ms")
-            print(f"  System CPU Time (OS)  : {ru.ru_stime*1000:.3f} ms")
-        print("=" * 70)
-
-metrics = Metrics()
 
 def sha256(*args):
     h = hashlib.sha256()
@@ -149,13 +80,16 @@ def recv_msg(sock):
     if not raw: return None
     msglen = int.from_bytes(raw, 'big')
     data = recvall(sock, msglen)
+    if data is None: return None
     metrics.record_recv(4 + msglen)
     return json.loads(data.decode('utf-8'))
 
 def recvall(sock, n):
     data = bytearray()
     while len(data) < n:
+        t = time.perf_counter()
         pkt = sock.recv(n - len(data))
+        metrics.add_wait(time.perf_counter() - t)
         if not pkt: return None
         data.extend(pkt)
     return data
@@ -188,15 +122,15 @@ class ASProtocol:
         self.db = {}
 
     def execute_handshake(self, conn):
-        metrics.start_total()
+        self.db = {}  # every run is a fresh registration
 
-        print("\n[AS] --- PRE-REGISTRATION (Offline) ---")
-        print("[AS] PKS: pre-provisioned to IoT via ./pks.pem.")
-        print("[AS] PSW: generated locally on IoT device (AS never receives it).")
+        log("\n[AS] --- PRE-REGISTRATION (Offline) ---")
+        log("[AS] PKS: pre-provisioned to IoT via ./pks.pem.")
+        log("[AS] PSW: generated locally on IoT device (AS never receives it).")
 
         # === ALGORITHM 2 — Server Registration Processing ===
         metrics.start_phase("Algo 2 — Reg Processing")
-        print("\n[AS] --- REGISTRATION PHASE (Algorithm 2) ---")
+        log("\n[AS] --- REGISTRATION PHASE (Algorithm 2) ---")
         reg_req = recv_msg(conn)
         if not reg_req:
             print("[AS] ERROR: No registration request received.")
@@ -259,12 +193,12 @@ class ASProtocol:
             'E2': base64.b64encode(e2).decode('utf-8'),
             'H2': base64.b64encode(h2).decode('utf-8')
         })
-        print("[IoT/AS] Registration complete.")
+        log("[IoT/AS] Registration complete.")
         metrics.end_phase()
 
         # === ALGORITHM 5 — Device Authentication by Server ===
         metrics.start_phase("Algo 5 — Device Auth")
-        print("\n[AS] --- AUTHENTICATION PHASE (Algorithm 5) ---")
+        log("\n[AS] --- AUTHENTICATION PHASE (Algorithm 5) ---")
         auth_req = recv_msg(conn)
         if not auth_req:
             print("[AS] ERROR: No authentication request received.")
@@ -325,8 +259,8 @@ class ASProtocol:
         })
 
         sk = sha256(k_new, n_d, i_u_n)
-        print("[AS] Device authenticated. Mutual Handshake COMPLETE!")
-        print(f"[AS] Session Key: {sk.hex()}")
+        log("[AS] Device authenticated. Mutual Handshake COMPLETE!")
+        log(f"[AS] Session Key: {sk.hex()}")
 
         # Update DB for fast reconnect / subsequent sessions
         del self.db[midi_in]
@@ -343,10 +277,55 @@ class ASProtocol:
         metrics.end_phase()
         return sk
 
+
+def secure_exchange(conn, sk):
+    metrics.start_phase("Secure Message Exchange")
+    try:
+        t = time.perf_counter()
+        enc_data = conn.recv(4096)
+        metrics.add_wait(time.perf_counter() - t)
+        if not enc_data:
+            return False
+        metrics.record_recv(len(enc_data))
+        msg = aes_decrypt(sk, enc_data)
+        log(f"[AS] Received encrypted message from IoT: {msg.decode('utf-8')}")
+
+        resp = b"Hello from Laptop AS! Secure hardware session verified."
+        enc_resp = aes_encrypt(sk, resp)
+        conn.sendall(enc_resp)
+        metrics.record_send(len(enc_resp))
+        log("[AS] Sent encrypted response to IoT.")
+        return True
+    finally:
+        metrics.end_phase()
+
+
+def report(rows, out_dir):
+    if not rows:
+        print("[AS] No runs recorded.")
+        return
+    notes = []
+    if os.name == 'nt':
+        notes.append("Windows CPU clock ticks every ~15.6 ms: use *_active_ms for compute; "
+                     "energy is computed from active time.")
+    notes.append(f"Power model: {AS_POWER_WATTS} W (set AS_POWER_WATTS to change).")
+    expstats.print_summary("AUTHENTICATION SERVER (AS) — STATISTICS", rows, notes)
+    runs_path, summary_path = expstats.write_csvs(out_dir, 'as', rows)
+    print(f"  CSV (per run) : {runs_path}")
+    print(f"  CSV (summary) : {summary_path}")
+
+
 def main():
+    global VERBOSE
+    parser = expstats.add_common_args(argparse.ArgumentParser(description=__doc__.split('\n')[1]))
+    args = parser.parse_args()
+    total = args.warmup + args.runs
+    VERBOSE = args.verbose or total == 1
+
     print("=" * 65)
     print("  AUTHENTICATION SERVER (AS) — HARDWARE EXPERIMENT")
     print(f"  Listening on {HOST}:{PORT}")
+    print(f"  {args.warmup} warm-up + {args.runs} measured handshakes")
     print("=" * 65)
 
     auth = ASProtocol()
@@ -356,52 +335,56 @@ def main():
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
-    pks_path = 'pks.pem'
-    with open(pks_path, 'wb') as f:
+    with open('pks.pem', 'wb') as f:
         f.write(pks_pem)
-    print(f"[AS] Server Public Key written to {pks_path} (offline provisioning)")
+    print("[AS] Server Public Key written to pks.pem (offline provisioning)")
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if os.name != 'nt':  # on Windows SO_REUSEADDR lets two servers share one port
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((HOST, PORT))
     server.listen(5)
+    server.settimeout(1.0)  # lets Ctrl+C interrupt accept() on Windows
 
-    print(f"\n[AS] Waiting for Raspberry Pi 3B+ on port {PORT}...")
+    print(f"\n[AS] Waiting for connections on port {PORT}... (Ctrl+C to stop and report)")
 
-    conn, addr = server.accept()
-    print(f"\n[AS] Connection accepted from {addr[0]}:{addr[1]}")
-
+    rows = []
     try:
-        sk = auth.execute_handshake(conn)
-    except Exception as e:
-        print(f"[AS] Handshake error: {e}")
-        conn.close()
+        while len(rows) < total:
+            try:
+                conn, addr = server.accept()
+            except socket.timeout:
+                continue
+            idx = len(rows) + 1
+            warm = idx <= args.warmup
+            metrics.reset()
+            metrics.start_total()
+            ok = False
+            try:
+                sk = auth.execute_handshake(conn)
+                if sk:
+                    ok = secure_exchange(conn, sk)
+            except Exception as e:
+                print(f"[AS] Run {idx} error: {e!r}")
+            finally:
+                conn.close()
+            metrics.finish()
+
+            row = {'run': idx, 'warmup': int(warm), 'ok': int(ok)}
+            row.update(metrics.as_row())
+            rows.append(row)
+            t = metrics.total
+            print(f"[AS] run {idx}/{total} {'warm-up' if warm else 'measured'} "
+                  f"{'ok' if ok else 'FAILED'}  wall={t['wall_ms']:.2f} ms  active={t['active_ms']:.2f} ms")
+            if total == 1:
+                metrics.print_table("AUTHENTICATION SERVER (AS) — PERFORMANCE METRICS")
+    except KeyboardInterrupt:
+        print("\n[AS] Interrupted — reporting runs completed so far.")
+    finally:
         server.close()
-        return
 
-    if sk:
-        metrics.start_phase("Secure Message Exchange")
-        try:
-            enc_data = conn.recv(4096)
-            if enc_data:
-                metrics.record_recv(len(enc_data))
-                msg = aes_decrypt(sk, enc_data)
-                print(f"[AS] Received encrypted message from IoT: {msg.decode('utf-8')}")
+    report(rows, args.out_dir)
 
-                resp = b"Hello from Laptop AS! Secure hardware session verified."
-                enc_resp = aes_encrypt(sk, resp)
-                conn.sendall(enc_resp)
-                metrics.record_send(len(enc_resp))
-                print("[AS] Sent encrypted response to IoT.")
-        except Exception as e:
-            print(f"[AS] Message exchange error: {e}")
-        metrics.end_phase()
-
-        print("\n[AS] Protocol execution complete.")
-        metrics.print_summary()
-
-    conn.close()
-    server.close()
 
 if __name__ == '__main__':
     main()

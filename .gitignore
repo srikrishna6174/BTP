@@ -19,3 +19,10 @@ work.pdf
 
 # Large binary (optional — remove this line if you want the PDF in the repo)
 # work.pdf
+
+# Archives
+docker.zip
+
+# Backups / temp files
+*.bak
+*.tmp
