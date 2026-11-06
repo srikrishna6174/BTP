@@ -1,0 +1,79 @@
+=== EAP-IMP IMPLEMENTATION SECURITY ATTACK TESTBENCH ===
+
+============================================================
+  EAP-IMP SECURITY ATTACK TESTBENCH
+  Target: 127.0.0.1:55556
+============================================================
+
+  Checking server reachability...
+  Server is reachable at 127.0.0.1:55556 ✅
+
+  Loading public key from pks.pem...
+  Public key loaded ✅
+
+────────────────────────────────────────────────────────────
+  TEST: Replay Attack
+  Re-send captured (Midi,M1,HA1) in a new session / out-of-order state
+────────────────────────────────────────────────────────────
+  Result : ✅ PASS
+  Detail : Server correctly dropped out-of-order replay attempt
+
+────────────────────────────────────────────────────────────
+  TEST: MAC Tampering (HA1 Flip)
+  Corrupt HA1 by flipping its first byte — HMAC integrity check
+────────────────────────────────────────────────────────────
+  Result : ✅ PASS
+  Detail : Server correctly rejected tampered HA1 (integrity check passed)
+
+────────────────────────────────────────────────────────────
+  TEST: Ciphertext Tampering (M1 Corruption)
+  Corrupt M1 ciphertext — AES decryption + hash integrity
+────────────────────────────────────────────────────────────
+  Result : ✅ PASS
+  Detail : Server correctly rejected tampered M1 ciphertext
+
+────────────────────────────────────────────────────────────
+  TEST: Unknown Identity (Rogue Device)
+  Send random MIDI not in server DB — impersonation attempt
+────────────────────────────────────────────────────────────
+  Result : ✅ PASS
+  Detail : Server correctly rejected unknown MIDI (impersonation blocked)
+
+────────────────────────────────────────────────────────────
+  TEST: Wrong Encryption Key (No Kreg)
+  Encrypt M1 with random key — attacker without shared secret
+────────────────────────────────────────────────────────────
+  Result : ✅ PASS
+  Detail : Server correctly rejected wrong-key encryption (Kreg secrecy verified)
+
+────────────────────────────────────────────────────────────
+  TEST: Truncated/Malformed Message
+  Send auth msg with missing M1 and HA1 fields — robustness
+────────────────────────────────────────────────────────────
+  Result : ✅ PASS
+  Detail : Server handled truncated/malformed message gracefully (no crash, no M2)
+
+────────────────────────────────────────────────────────────
+  TEST: Raw Garbage Bytes (Fuzzing)
+  Send 400 bytes of random garbage over TCP — crash resistance
+────────────────────────────────────────────────────────────
+  Result : ✅ PASS
+  Detail : Server handled raw garbage connection gracefully (robust to fuzzing)
+
+============================================================
+  SECURITY TEST SUMMARY
+============================================================
+  ✅ PASS  Replay Attack
+  ✅ PASS  MAC Tampering (HA1 Flip)
+  ✅ PASS  Ciphertext Tampering (M1 Corruption)
+  ✅ PASS  Unknown Identity (Rogue Device)
+  ✅ PASS  Wrong Encryption Key (No Kreg)
+  ✅ PASS  Truncated/Malformed Message
+  ✅ PASS  Raw Garbage Bytes (Fuzzing)
+────────────────────────────────────────────────────────────
+  7/7 attacks correctly blocked
+  🔒 All attacks blocked — protocol implementation is ROBUST
+============================================================
+
+=== AUTHENTICATION SERVER EXECUTION LOG ===
+
