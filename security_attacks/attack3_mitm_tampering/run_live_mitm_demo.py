@@ -23,10 +23,13 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-BASE_DIR = r"C:\Users\Srikrishna\Desktop\BTP\Implementation\hardware_experiment"
-PI_HOST = "192.168.137.251"
-PI_USER = "pi"
-KEY_PATH = r"C:\Users\Srikrishna\.ssh\pi_key"
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Relative path to baseline hardware_experiment directory containing as_server.py
+HW_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", "hardware_experiment"))
+
+PI_HOST = os.environ.get("PI_HOST", "192.168.137.251")
+PI_USER = os.environ.get("PI_USER", "pi")
+KEY_PATH = os.environ.get("SSH_KEY", os.path.expanduser(r"~/.ssh/pi_key"))
 
 
 def main():
@@ -65,22 +68,22 @@ def main():
                 print("     (Unplug and replug Pi power if it was sitting idle).")
                 sys.exit(1)
 
-    # Step 2: Start AS in background
+    # Step 2: Start AS in background from hardware_experiment directory
     print("\n[2/4] Starting Authentication Server on port 55556...")
     as_proc = subprocess.Popen(
         [sys.executable, "as_server.py", "--runs", "1", "--warmup", "0"],
-        cwd=BASE_DIR,
+        cwd=HW_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
     )
     time.sleep(1.5)
 
-    # Step 3: Start MITM Adversary Proxy on port 55555
+    # Step 3: Start MITM Adversary Proxy on port 55555 from current directory
     print(f"\n[3/4] Starting Adversarial AP Proxy on port 55555 (Mode: {args.attack})...")
     mitm_proc = subprocess.Popen(
-        [sys.executable, "mitm_adversary.py", "--mode", args.attack, "--sessions", "1"],
-        cwd=BASE_DIR,
+        [sys.executable, os.path.join(CURRENT_DIR, "mitm_adversary.py"), "--mode", args.attack, "--sessions", "1"],
+        cwd=CURRENT_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True

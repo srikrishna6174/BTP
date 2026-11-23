@@ -1,7 +1,8 @@
 """
 Adversarial Access Point (MITM Proxy) — Live Hardware Security Testbench
-Runs on the Laptop in place of ap.py:
+Part of Attack 3: Man-in-the-Middle Integrity Tampering
 
+Runs on the Laptop in place of ap.py:
     Raspberry Pi (IoT) --Wi-Fi--> MITM AP :55555 --Loopback--> AS :55556
 
 Intercepts live wireless traffic between the physical Raspberry Pi and the AS Server,
@@ -46,13 +47,15 @@ def recv_frame(sock):
         raw_len = b''
         while len(raw_len) < 4:
             chunk = sock.recv(4 - len(raw_len))
-            if not chunk: return None
+            if not chunk:
+                return None
             raw_len += chunk
         msglen = int.from_bytes(raw_len, 'big')
         data = b''
         while len(data) < msglen:
             chunk = sock.recv(msglen - len(data))
-            if not chunk: return None
+            if not chunk:
+                return None
             data += chunk
         return json.loads(data.decode('utf-8'))
     except Exception:
@@ -71,7 +74,8 @@ def relay_clean(src, dst):
     try:
         while True:
             chunk = src.recv(4096)
-            if not chunk: break
+            if not chunk:
+                break
             dst.sendall(chunk)
     except Exception:
         pass
@@ -191,8 +195,10 @@ def handle_session(iot_sock, mode):
         # Phase 3: Secure message exchange (transparent relay)
         t1 = threading.Thread(target=relay_clean, args=(iot_sock, as_sock), daemon=True)
         t2 = threading.Thread(target=relay_clean, args=(as_sock, iot_sock), daemon=True)
-        t1.start(); t2.start()
-        t1.join(timeout=3); t2.join(timeout=3)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3)
+        t2.join(timeout=3)
 
         if mode == 'tamper-m2':
             print("  [MITM AP] [DEFENSE TRIGGERED] Pi rejected the tampered M2 and refused session exchange!")
