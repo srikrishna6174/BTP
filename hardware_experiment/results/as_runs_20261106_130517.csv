@@ -1,0 +1,2 @@
+run,warmup,ok,algo_2_reg_processing_wall_ms,algo_2_reg_processing_cpu_ms,algo_2_reg_processing_active_ms,algo_2_reg_processing_energy_mJ,algo_2_reg_processing_sent_B,algo_2_reg_processing_recv_B,total_wall_ms,total_cpu_ms,total_active_ms,total_energy_mJ,total_sent_B,total_recv_B
+1,0,0,14.9482,15.625,9.3231,606.0015,668,539,21.493,15.625,9.5917,623.4605,668,964
