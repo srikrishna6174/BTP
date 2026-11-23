@@ -16,13 +16,11 @@ Target (env):  AS_HOST (default 192.168.137.1)   AS_PORT (default 55556)
 Needs expstats.py in the same folder.
 """
 
-import argparse
 import socket
 import json
 import base64
 import hashlib
 import os
-import sys
 import time
 
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -299,22 +297,76 @@ def run_once(pks):
     return ok, connect_ms, err
 
 
-def report(rows, out_dir):
+def report(rows):
     if not rows:
         print("[IoT] No runs recorded.")
         return
-    notes = [f"Power model: {IOT_POWER_WATTS} W x CPU time (set IOT_POWER_WATTS to change)."]
-    expstats.print_summary("IoT DEVICE (Raspberry Pi 3B+) — STATISTICS", rows, notes)
-    runs_path, summary_path = expstats.write_csvs(out_dir, 'iot', rows)
-    print(f"  CSV (per run) : {runs_path}")
-    print(f"  CSV (summary) : {summary_path}")
+
+    # Only measured (non-warmup) successful runs
+    measured = [r for r in rows if not r.get('warmup') and r.get('ok')]
+
+    # Phase columns: Registration = Algo1 + Algo3, Authentication = Algo4 + Algo6
+    phases = {
+        'Registration': ('algo_1_reg_init', 'algo_3_storage_setup'),
+        'Authentication': ('algo_4_auth_request', 'algo_6_server_auth'),
+    }
+    fields = ['wall_ms', 'cpu_ms', 'energy_mJ', 'sent_B', 'recv_B']
+    headers = {
+        'wall_ms':   'Wall Time (ms)',
+        'cpu_ms':    'CPU Time (ms)',
+        'energy_mJ': 'Energy (mJ)',
+        'sent_B':    'Bytes Sent',
+        'recv_B':    'Bytes Received',
+    }
+
+    # --- runs.csv ---
+    out_dir = os.path.dirname(os.path.abspath(__file__))
+    runs_path = os.path.join(out_dir, 'runs.csv')
+    col_headers = ['Run']
+    for phase in phases:
+        for f in fields:
+            col_headers.append(f'{phase} {headers[f]}')
+
+    import csv, statistics as st
+    with open(runs_path, 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(col_headers)
+        for i, r in enumerate(measured, 1):
+            row = [i]
+            for algos in phases.values():
+                for f in fields:
+                    val = sum(r.get(f'{a}_{f}', 0) for a in algos)
+                    row.append(round(val, 4) if isinstance(val, float) else val)
+            w.writerow(row)
+
+    # --- summary.csv ---
+    summary_path = os.path.join(out_dir, 'summary.csv')
+    with open(summary_path, 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(['Phase', 'Metric', 'Mean', 'Standard Deviation'])
+        for phase, algos in phases.items():
+            for f in fields:
+                vals = [sum(r.get(f'{a}_{f}', 0) for a in algos) for r in measured]
+                mean = round(st.fmean(vals), 4)
+                std  = round(st.stdev(vals), 4) if len(vals) > 1 else 0.0
+                w.writerow([phase, headers[f], mean, std])
+
+    print(f"  runs.csv    : {runs_path}")
+    print(f"  summary.csv : {summary_path}")
 
 
 def main():
     global VERBOSE
-    parser = expstats.add_common_args(argparse.ArgumentParser(description=__doc__.split('\n')[1]))
-    parser.add_argument('--delay', type=float, default=0.2,
-                        help='pause between runs in seconds (default %(default)s)')
+    import argparse as _ap
+    parser = _ap.ArgumentParser(description=__doc__.split('\n')[1])
+    parser.add_argument('--runs',   type=int, default=int(os.environ.get('RUNS', 50)),
+                        help='measured runs (default 50)')
+    parser.add_argument('--warmup', type=int, default=int(os.environ.get('WARMUP', 3)),
+                        help='warm-up runs excluded from stats (default 3)')
+    parser.add_argument('--delay',  type=float, default=0.2,
+                        help='pause between runs in seconds (default 0.2)')
+    parser.add_argument('--verbose', action='store_true',
+                        help='print every protocol step (automatic for a single run)')
     args = parser.parse_args()
     total = args.warmup + args.runs
     VERBOSE = args.verbose or total == 1
@@ -358,7 +410,7 @@ def main():
     except KeyboardInterrupt:
         print("\n[IoT] Interrupted — reporting runs completed so far.")
 
-    report(rows, args.out_dir)
+    report(rows)
 
 
 if __name__ == '__main__':

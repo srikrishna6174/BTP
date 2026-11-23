@@ -300,24 +300,23 @@ def secure_exchange(conn, sk):
         metrics.end_phase()
 
 
-def report(rows, out_dir):
+def report(rows):
     if not rows:
         print("[AS] No runs recorded.")
         return
-    notes = []
-    if os.name == 'nt':
-        notes.append("Windows CPU clock ticks every ~15.6 ms: use *_active_ms for compute; "
-                     "energy is computed from active time.")
-    notes.append(f"Power model: {AS_POWER_WATTS} W (set AS_POWER_WATTS to change).")
-    expstats.print_summary("AUTHENTICATION SERVER (AS) — STATISTICS", rows, notes)
-    runs_path, summary_path = expstats.write_csvs(out_dir, 'as', rows)
-    print(f"  CSV (per run) : {runs_path}")
-    print(f"  CSV (summary) : {summary_path}")
+    measured = [r for r in rows if not r.get('warmup') and r.get('ok')]
+    print(f"\n[AS] Done — {len(measured)} measured runs completed.")
 
 
 def main():
     global VERBOSE
-    parser = expstats.add_common_args(argparse.ArgumentParser(description=__doc__.split('\n')[1]))
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[1])
+    parser.add_argument('--runs',   type=int, default=int(os.environ.get('RUNS', 50)),
+                        help='measured runs (default 50)')
+    parser.add_argument('--warmup', type=int, default=int(os.environ.get('WARMUP', 3)),
+                        help='warm-up runs excluded from stats (default 3)')
+    parser.add_argument('--verbose', action='store_true',
+                        help='print every protocol step (automatic for a single run)')
     args = parser.parse_args()
     total = args.warmup + args.runs
     VERBOSE = args.verbose or total == 1
@@ -383,7 +382,7 @@ def main():
     finally:
         server.close()
 
-    report(rows, args.out_dir)
+    report(rows)
 
 
 if __name__ == '__main__':

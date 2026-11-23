@@ -106,11 +106,8 @@ def report(args):
     if not snapshot:
         print("[AP] No sessions recorded.")
         return
-    expstats.print_summary("ACCESS POINT (AP) — STATISTICS", snapshot,
-                           ["Bytes are relayed payload bytes (TCP data, excluding TCP/IP headers)."])
-    runs_path, summary_path = expstats.write_csvs(args.out_dir, 'ap', snapshot)
-    print(f"  CSV (per run) : {runs_path}")
-    print(f"  CSV (summary) : {summary_path}")
+    measured = [r for r in snapshot if not r.get('warmup') and r.get('ok')]
+    print(f"\n[AP] Done — {len(measured)} measured sessions relayed.")
 
 
 def main():

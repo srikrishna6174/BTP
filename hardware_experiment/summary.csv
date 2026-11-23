@@ -1,0 +1,11 @@
+Phase,Metric,Mean,Standard Deviation
+Registration,Wall Time (ms),16.5692,16.5035
+Registration,CPU Time (ms),7.184,0.7759
+Registration,Energy (mJ),8.6209,0.931
+Registration,Bytes Sent,539.0,0.0
+Registration,Bytes Received,668.0,0.0
+Authentication,Wall Time (ms),10.8238,21.2715
+Authentication,CPU Time (ms),1.7372,0.1876
+Authentication,Energy (mJ),2.0846,0.2251
+Authentication,Bytes Sent,425.0,0.0
+Authentication,Bytes Received,517.0,0.0
